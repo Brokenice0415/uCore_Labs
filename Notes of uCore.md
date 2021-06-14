@@ -277,6 +277,30 @@ call do_exit # call do_exit to terminate current thread
 
 
 
+### 进程回收
+
+当mm不为空也就是用户进程时，回收用户vmm
+
+1. 执行lcr3指令，切换到内核页表状态
+2. 若mm引用计数减一后变为0，则回收对应内存
+   1. 通过exit_mmap回收current->mm->vma链表中每个vma所分配的内存，清空对应页表项
+   2. 释放页表并清空页目录
+   3. 通过put_pgdir回收页目录表所在页
+   4. 通过mm_destroy释放vma链表所占内存，然后释放mm所占内存
+3. 设置current->mm为null
+
+此时内存释放完毕
+
+1. 设置进程状态为ZOMBIE
+2. 通过waktup_proc(current->parent)向父进程发信号唤醒，通知回收子进程
+3. 子进程的子进程的父进程设置为initproc
+
+执行schedual函数进行调度
+
+父进程将子进程从进程链表和pid链表中删除，释放子进程的栈空间和进程结构体
+
+
+
 ## 进程切换
 
 通过进程中need_sched维护当前进程是否需要被调度走，当为1时表示需要（如时间片使用完）
@@ -288,4 +312,45 @@ call do_exit # call do_exit to terminate current thread
    - 设置任务状态段ts
    - 设置CR3寄存器
    - 调用switch_to函数恢复通用寄存器状态
+
+
+
+## 管程
+
+是一种对于条件变量使用的封装数据结构，能够统一管理若干临界区
+
+由信号量实现的条件变量
+
+- 二值信号量sem
+- 等待队列长度count
+- 指向控制该条件变量的管程的指针owner
+
+管程monitor
+
+- 互斥锁mutex
+  - 控制进入管程整体的临界区
+- 条件变量组cvs
+  - 每一个条件变量管理着自己的临界区
+- 信号量next
+  - 控制进入管程的入口队列
+- 剩余等待数next_count
+  - 入口队列长度
+
+
+
+管程控制临界区方法
+
+```c
+cv.count++;
+if(monitor.next_count > 0)
+   sem_signal(monitor.next);
+else
+   sem_signal(monitor.mutex);
+sem_wait(cv.sem);
+cv.count -- ;
+```
+
+每次对monitor的next进行P操作，来控制进程进入管程，管程入口队列长度减1，然后将其睡眠在对应的控制条件变量cv上，cv上的等待队列长度加1
+
+直到该进程被此cv唤醒，cv的等待队列长度减1，此时进程就在管程的控制下进入运行running状态
 
